@@ -1,0 +1,595 @@
+---
+title: "Long-term deposit subscription study of retail banking market"
+author: "STA 207 Project 4"
+date: "2020/2/27"
+geometry: "left=0.8in,right=0.8in,top=0.8in,bottom=0.8in"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    fig_caption: yes
+    number_sections: yes
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 18px;
+  }
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE,message=FALSE,warning=FALSE,fig.align = 'center',out.width = '\\textwidth', out.extra = '', fig.pos = 'h',cache = TRUE)
+```
+
+***
+Group ID: 5\
+Libin Feng: Logistic Regression RMD Formatting, Visualization\
+Miao Hu: Diagnostics, RMD Formatting\
+Huachao Lin: Introduction, Summary Statistics\
+Roger Zhou: kNN, Conclusion, Wordings and Logics\
+Github repo link: https://github.com/miaohu2019/STA-Project-4
+
+***
+
+\pagebreak
+
+```{r}
+library(MASS)
+library(pROC)
+library(caret)
+library(bestglm)
+library(LogisticDx)
+library(ggplot2)
+library(car)
+library(tidyverse)
+library(broom)
+library(table1)
+
+```
+
+```{r}
+## Load the data ##
+bank_old <- read.csv("/cloud/project/bank-additional-full.csv", sep=";")
+
+## Data Exploration & Processing ##
+# We notice that "unknown" exists in 6 categorical variables
+```
+
+# INTRODUCTION
+
+The subscription of clients to the term deposit is closely tied to the asset liquidity of the commercial banks as well as their day-to-day operation. Therefore, it is of significant practical meaning that a robust algorithm is developed to project the decisions of the clients based on the available information. In this project, we aim to construct predictive models on the clients’ decisions to subscribe to a term deposit from a publicly available data set of the banking market in Portuguese. We will base our analysis upon a logistic regression model, followed by another prediction technique, K-Nearest Neighbors (KNN) algorithm, to assess the predictive powers of these methods as well as determine the appropriate model for this task. 
+
+## Data Set
+
+Four datasets of the marketing campaign are available in the UCI Machine Learning Repository containing information of different extents on a telemarketing campaign of a  Portuguese retail bank in 2008. We will use the full dataset with 21 variables since the social and economic attributes are only present in this data set. Now that computing power has increased quite extensively, we should make full use of the available information in developing a robust prediction method. 
+
+## Questions of Interest
+Will the client subscribe to a term deposit given currently available information? \
+How accurately can a logistic regression model predict such a decision? Are the model assumptions satisfied?\
+How good is the prediction by logistic regression compared with other common techniques? 
+
+
+# STATISTICAL ANALYSIS
+
+## Part I Data Exploration and Processing
+
+### Data Processing 
+According to the data set description, the variable “last contact duration” highly affects the response variable. Also, the duration is not known before a call is made, hence should not be considered if we intend to construct a realistic predictive model. \
+We also find that the personal loan and the housing loan variables, “loan” and “housing”, share the same exact missing values, i.e. “unknown”. To avoid definite multicollinearity, we generate a variable, `loanyes`, in lieu of the original variable, `loan`. \
+The value “unknown” appears here and there in the data set possibly because clients were reluctant to report certain information out of privacy concerns, or the data was lost. Since quite a lot of observations missed at least one categorical attribute, it would not be reasonable to drop them directly. However, we notice that only 80 individuals have unidentified marital status. We simply remove these observations as the number is negligible compared to the sample size. For the rest of the categorical variables with missing values, we will preserve these ‘unknown’s as if they represent an independent level.
+
+
+
+```{r}
+# We directly drop the 80 observations with "unknown" marital status since 80 is small compared to sample size
+bank_old <- bank_old[-which(bank_old$marital == 'unknown'),]
+bank_old$marital <- droplevels(bank_old$marital)
+# For the rest of such variables, we will carry the "unknown" as if it is a level, 
+# and decide what to do based on the performance of our methods
+
+# Then, we convert "pdays" into binary, either contacted before (1) or not at all (0)
+bank_old$pdays = ifelse(bank_old$pdays == 999,0,1)
+bank_old$loanyes = as.factor(ifelse(bank_old$loan == 'yes',1,0))
+
+# Next, we convert "y" into a numeric binary variable, in a way that "0" denotes "no",
+# and "1" denotes "yes", so it is easier to work with
+bank_old$y <- as.numeric(bank_old$y)-1
+bank_old <- bank_old[,c(1:6,8:10,12:22)]
+
+label(bank_old$marital) <- "maritial Status"
+label(bank_old$day_of_week) <- "last contact day of the week"
+label(bank_old$contact) <- "contact communication type "
+label(bank_old$default) <- "has credit in default?"
+label(bank_old$housing) <- "has housing loan?"
+label(bank_old$month) <- "last contact month of year "
+label(bank_old$loanyes) <- "has personal loan"
+label(bank_old$pdays) <- "if the client was last contacted from a previous campaign"
+label(bank_old$campaign) <- "number of contacts performed during this campaign & for this client (includes last contact)"
+label(bank_old$previous) <- "number of contacts performed before this campaign & for this client"
+label(bank_old$poutcome) <- "outcome of the previous marketing campaign"
+label(bank_old$emp.var.rate) <- "employment variation rate - quarterly indicator"
+label(bank_old$cons.price.idx) <- "consumer price index - monthly"
+label(bank_old$cons.conf.idx) <- "consumer confidence index - monthly"
+label(bank_old$euribor3m) <- "EURIBOR 3 month rate"
+label(bank_old$nr.employed) <- "number of employees - quarterly"
+bank_old$education <- 
+  factor(bank_old$education,
+         labels=c("basic 4 Years", "basic 6 Years","basic 9 Years",
+                  "high school","illiterate","professional course", 'university degree', 'unknown'))
+```
+
+### Balancing the Data
+As previously discussed, there exists gross imbalance in the binary response classes, with the positive response accounting for only 11.29% of the entire dataset. This disproportion will introduce bias in the experimental results (Apampa 2016). Hence, the dataset needs to be balanced in order to have equal proportions of ‘no’ and ‘yes’ in the response variable. After dropping the 80 cases with unknown marital status, we were left with 4,628 observations having “yes” as their term deposit subscription. Therefore, an equal number of ‘no’ responses (4,628) are randomly selected to complete 9,256 total cases as the new data set for the subsequent analysis.
+
+### Normalization 
+Features are typically transformed to a standard range prior to applying prediction techniques (Lantz 2013). We adopt the min-max normalization to scale the numeric features. To keep the experiment results more consistent and comparable, we use the normalized data throughout this report. \
+We find that the average age of customers who opted in to the term deposit is higher than that of the customers who did not. The number of contacts or calls made during the current campaign are lower for customers who subscribed to the term deposit. All other numeric inputs including “number of contacts before the campaign”, “employment variation rate”, “euribor 3 month rate” also confirm the heterogeneity between the two classes of the subscription to term deposit (Table 1). 
+
+```{r}
+## Create Balanced Data ##
+
+set.seed(100)
+new_data <- sample(which(bank_old$y==0), sum(bank_old$y), repl = F)
+bank <- bank_old[c(new_data, which(bank_old$y==1)),]
+bank = bank[sample(nrow(bank),nrow(bank), repl = F),]
+
+## Normalize the variables ##
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+# Below checks the dispersion of all numeric variables 
+numeric_index <- which(sapply(bank,class)!="factor" & names(bank)!="pdays")
+#sapply(bank[,numeric_index], sd)
+#sapply(bank[,numeric_index], range)
+
+# Variations within "duration", "pdays", "nr.employed" are dramatically larger than others
+# So, we apply the above normalization to these 3 variables 
+
+bank[,numeric_index] <- as.data.frame(sapply(bank[,numeric_index], normalize))
+
+```
+
+
+### Splitting the Data
+Finally, in order to formally evaluate the prediction of the logistic regression model, we split the balanced data into training set and validation set at the ratio of 8:2. Stratified splitting scheme is applied to maintain the ratio between the two classes of the response variable (8:2) in both the training and validation sets.
+
+
+```{r fig.cap= 'Summary Statistics / Frequency Table of Variables' }
+## Summary Table ##
+table1(~. | y, data=bank, caption = 'Summary Statistics / Frequency Table of Variables')
+
+```
+
+
+## Part II Logistic Regression
+
+### Model Specification
+
+For this binary logistics regression, the model is as below
+$$\log(P_{Y=1}/(1-P_{Y=1}) = \beta_{0} + \beta_{1}*X_{1} +... +\beta_{p}*X_{p} +\epsilon$$
+In our model, $P_1$ is the probability of $Y=1$ , or equivalently, y is ‘yes’. $\beta_0$ is the regression intercept. $X_1$ to $X_p$ are the input variables, including age, month, job title, etc. $\beta_1$ to $\beta_p$ are parameters for X variables. $\epsilon$ is the error term. Assumptions are:
+Independence of error terms $\epsilon$, linear relationship between the $\log(P_{Y=1}/(1-P_{Y=1})$ of the outcome and each predictor variables,
+no influential values in the continuous predictors, and no high multicollinearity among the predictors.
+
+
+### Model Estimates
+
+```{r}
+#### Part II. Logistic Regression ####
+
+## Split the data ##
+set.seed(100)
+trainIndex = createDataPartition(bank$y,
+                                 p=0.8, list=FALSE,times=1)
+
+train = bank[trainIndex,]
+test = bank[-trainIndex,]
+
+table(train$y)/sum(table(train$y))
+table(test$y)/sum(table(test$y))
+
+
+## Fit the Logistic Regression ##
+
+glm_full = glm(y ~ . ,family = binomial,data=train)
+aa = as.data.frame(round(glm_full$coefficients[c(26,27,31,40,45,46)],2))
+knitr::kable(aa,col.names = 'coefficient')
+
+```
+
+The summary table of our model and estimates are reported in the appendix due to page limit. Not all coefficients are significant.
+
+
+### Model Diagnostics
+
+We conducted model diagnostics on the four major assumptions of logistic regression (Kassambara 2018).
+
+* $\textbf{Binary Outcome:}$ As discussed in the exploratory data analysis, since the outcome variable has binary classes of “yes” or “no”, this assumption is satisfied.
+
+* $\textbf{Linear Relationship:}$ Figure XXXX shows smoothed scattered plot of the continuous variables associated with the response variable in logit scale. We observe no significant linear relationship across all investigated variables. Evidently, this assumption is violated.
+
+```{r}
+
+######## Model Diagnostic ###########
+
+# Select only numeric predictors
+predicors = c('age', 'campaign', 'previous', 'emp.var.rate', 'cons.price.idx',
+              'cons.conf.idx', 'euribor3m', 'nr.employed')
+mydata = train[predicors]
+
+probabilities = predict(glm_full, type = 'response')
+
+predicted.classes <- ifelse(probabilities > 0.5, "yes", "no")
+
+head(predicted.classes)
+
+
+## linearity assumption
+# Bind the logit and tidying the data for plot
+mydata <- mydata %>%
+  mutate(logit = log(probabilities/(1-probabilities))) %>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+
+ggplot(mydata, aes(logit, predictor.value))+
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") +
+  theme_bw() +
+  facet_wrap(~predictors, scales = "free_y")
+```
+
+* $\textbf{Influential Cases:}$ From the standard residual plot (Figure XXXXXX), we see that the residuals are scattered between -3 and 3, indicating no significant influential cases in the data set.
+
+```{r}
+# Extract model results
+model.data <- augment(glm_full) %>%
+mutate(index = 1:n())
+
+model.data %>% top_n(3, .cooksd)
+ggplot(model.data, aes(index, .std.resid)) +
+  geom_point(aes(color = y), alpha = .5) +
+  theme_bw()
+```
+
+
+* $\textbf{Multicollinearity:}$ The variance inflation factor (VIF) of all the variables are presented in the table below. We see that “employment variation rate”, “consumer price index”, “euribor 3 month rate”, and “number of employees” have VIF higher than 5. We believe that multicollinearity exists. 
+
+```{r}
+## Multicolinearity
+viftable <- car::vif(glm_full)[,3]
+knitr::kable(viftable[viftable > 5],digits = 3,col.names = 'GVIF^(1/(2*Df)')
+```
+
+In conclusion, two of the four assumptions of the logistic regression model are violated. These violations imply that the logistic regression might not be the best approach when constructing predictive models on the data set. Further investigation on transforming the data is appropriate to resolve the violated model assumptions and strengthen the predictive power of the logistic regression model. 
+
+
+
+### Prediction
+
+The prediction measures of this model are reported below in Table in the Discussion section. More details will be discussed. 
+
+```{r}
+## Prediction ##
+
+glm_full_pred<- ifelse(predict(glm_full, test, type="response")>.5,'yes','no')
+glm_full_pred_conf<-table(glm_full_pred, test$y, dnn = c("Prediction","True"))
+glm_full_pred_conf
+```
+
+```{r}
+
+## Misclassification Error Rate  of the Full model ##
+
+(glm_full_pred_mrr <- 1-sum(diag(glm_full_pred_conf))/sum(glm_full_pred_conf))
+
+acc1 = sum(diag(glm_full_pred_conf))/sum(glm_full_pred_conf)
+
+## Area Under the curve ##
+
+#auc(glm_full$y,glm_full$fitted.values,plot = TRUE,legacy.axes = TRUE)
+
+auc1 = auc(glm_full$y,glm_full$fitted.values,plot = FALSE,legacy.axes = TRUE)[1]
+
+
+#check sensitivity
+spe1 = glm_full_pred_conf[1,1]/sum(glm_full_pred_conf[1,])
+
+#check specificity
+sen1 = glm_full_pred_conf[2,2]/sum(glm_full_pred_conf[2,])
+
+
+
+```
+
+
+### Sensitivity Analysis
+
+In order to investigate whether the balancedness in data has an impact on the performance of the logistic model. We carried out a sensitivity analysis by fitting the logistic model with the original unbalanced dataset (41,108 observations). The results are reported in Table XXX in the Discussion section below. While the misclassification error rate has improved to 0.1039, the area-under-the-curve (AUC) measure has gone down a little. Because of the unbalancedness in the original full data set, even a naive prediction of “no” for all cases would have misclassification error of around 0.08, and hence the improvement in error rate is not insightful. However, we do see the degree of separability measured by AUC suffer from extremely unbalanced response levels, although mildly. 
+
+
+```{r}
+## Sensitivity Analysis (with Full Data) ##
+
+set.seed(100)
+trainIndex = createDataPartition(bank_old$y,
+                                 p=0.8, list=FALSE,times=1)
+
+train = bank_old[trainIndex,]
+test = bank_old[-trainIndex,]
+
+table(train$y)/sum(table(train$y))
+table(test$y)/sum(table(test$y))
+
+glm_full2 = glm(y ~ . ,family = binomial,data=train)
+# summary(glm_full2)
+
+glm_full_pred2 <- ifelse(predict(glm_full2, test, type="response")>.5,'yes','no')
+glm_full_pred_conf2 <-table(glm_full_pred2, test$y, dnn = c("Prediction","True"))
+glm_full_pred_conf2
+
+## Misclassification Error Rate  of the Full model ##
+
+(glm_full_pred_mrr2 <- 1-sum(diag(glm_full_pred_conf2))/sum(glm_full_pred_conf2))
+
+acc2 = sum(diag(glm_full_pred_conf2))/sum(glm_full_pred_conf2)
+
+## Area Under the curve ##
+
+#auc(glm_full2$y,glm_full2$fitted.values,plot = TRUE,legacy.axes = TRUE)
+
+auc2 = auc(glm_full2$y,glm_full2$fitted.values,plot = FALSE,legacy.axes = TRUE)[1]
+
+
+#check sensitivity
+spe2 = glm_full_pred_conf2[1,1]/sum(glm_full_pred_conf2[1,])
+
+#check specificity
+sen2 = glm_full_pred_conf2[2,2]/sum(glm_full_pred_conf2[2,])
+```
+
+
+## Part III k-Nearest Neighbors
+
+```{r}
+#### Part III. K Nearest Neighbors ####
+
+## Generate Dummy Variables ##
+#install.packages("fastDummies")
+library(fastDummies)
+
+generate_dummies <- function(x){
+  return(dummy_cols(x, remove_first_dummy = T)[,-1])
+}
+
+factor_index <- which(sapply(bank, class)=="factor")
+
+data <- data.frame(bank[,numeric_index], sapply(bank[factor_index], generate_dummies))
+
+
+## Split the data ##
+set.seed(100)
+trainIndex = createDataPartition(data$y,
+                                 p=0.8, list=FALSE,times=1)
+
+train = data[trainIndex,]
+test = data[-trainIndex,]
+
+table(train$y)/sum(table(train$y))
+table(test$y)/sum(table(test$y))
+
+
+## Predict Using K Nearest Neighbors ##
+
+# install.packages("class")
+library(class)
+
+knn_predict <- function(train, test, train_label, test_label, k){
+  knn_fit <- knn(train, test, train_label, k)
+  accuracy <- sum(test_label == knn_fit)/length(test_label)*100
+  accuracy <- round(accuracy, 4)
+  #conf_mat <- table(knn_fit, "Test Labels"= test[,"y"])
+  #cat("Prediction Accuracy with ", k, " neighbors: ", accuracy, sep = "", "% \n")
+  #cat("Confusion Matrix:\n")
+  #print(conf_mat)
+  
+  return(accuracy)
+}
+
+rate <- c()
+counter <- 1
+set.seed(100)
+for(i in 1:150){
+   rate[counter] <- knn_predict(train[,-ncol(train)], test[,-ncol(test)], train[,"y"], test[,"y"], i)
+   counter <- counter+1
+ }
+ 
+
+# We see that when K=19, the prediction accuracy attains its maximum
+
+## Accuracy and Confusion Matrix ##
+knn_fit <- knn(train[,-ncol(train)], test[,-ncol(test)], train[,"y"],  which.max(rate))
+table3 = table(knn_fit, "Test Labels"= test[,"y"])
+table3
+## Misclassification Error Rate ##
+
+acc3 = sum(diag(table3))/sum(table3)
+mis3 = 1-acc3
+
+# Area Under the Curve
+auc3 = auc(test[,"y"], as.numeric(as.character(knn_fit)), plot = FALSE,legacy.axes = TRUE)[1]
+
+#check sensitivity
+spe3 = table3[1,1]/sum(table3[1,])
+
+#check specificity
+sen3 = table3[2,2]/sum(table3[2,])
+
+
+```
+
+
+Furthermore, we will employ one other classification method to compare and contrast the performance of the above logistic regression approach. We have explored the following 3 common algorithms in data analysis especially machine learning, Random Forest, K-Nearest Neighbors (KNN), and Support Vector Machine (SVM). Eventually, we decide to use the KNN approach since it returns the best prediction results among these 3 methods. In the next part, we will showcase how we apply KNN on this data set (results of other methods are omitted for brevity). 
+
+### Preparatory Processing
+One of the most advantageous things about KNN is that it requires no parametric form, hence no parametric assumptions. Nonetheless, we need to perform some additional data processing before we can implement this algorithm. Since the distance measure is the key to the effectiveness of this algorithm, we need numerical values to establish the calculation of distance between observations. Specifically, instead of keeping the categorical variables as they are, we generate corresponding dummy variables for each of these variables at the amount of total levels minus 1 (to avoid multicollinearity), respectively, thus a total of 43 dummy variables. Likewise, we split the refined data into training (80%) and validation (20%) sets to quantitatively monitor the behavior of KNN.
+
+### Implementing the Algorithm
+Under the Euclidean norm function, otherwise known as the L2 norm, the distances from each observation in the validation set to observations in the validation set are calculated using all features. It then follows that the smaller the distance, the “closer” the data point in the training set is to the observation in the validation set. The idea is that the “closest” K observations in the training set together determine the predicted label of this particular observation in the validation set, for some given positive integer K. Once we have obtained the predicted labels of all observations in the validation set, we compare the predicted labels with their true labels and compute the accuracy rate with respect to the given integer K. \
+As is suggested by a number of references, it is usually a good idea to set K to the square-root of the size of the training set. In our case, $K^*=\sqrt{0.8\times 9256}\approx 86$. Therefore, we implement the KNN algorithm for all integers between 1 and 150, and plot the percent accuracy rate against the values of K in the figure below. 
+
+```{r}
+plot(x = 1:length(rate), y = rate, type = "l", xlab = "K", 
+     ylab = "Accuracy (%)", main = "Accuracy VS. Number of Neighbors")
+abline(v = which.max(rate), lty = 2, col = "red")
+axis(side = 1, at = which.max(rate), labels = T, col = "red")
+points(which.max(rate), max(rate), col = "red", pch = 19)
+```
+
+### Validation and Optimal Choice of K
+Based on the figure above, it is clear that the prediction accuracy of the KNN algorithm attains its maximum when K is equal to `r which.max(rate)`. This optimal choice of K also best achieves the bias-variance balance because the accuracy directly measures the predictive power of the algorithm using the data that is not present in the training data set; that is, the out-of-sample predictive power. Since this aligns with the idea of bias-variance tradeoff, which is to minimize the out-of-sample prediction error, we conclude that K=19 is indeed optimal. Most importantly, with this optimal choice of K, the prediction accuracy reaches `r acc3`, much higher than that of the logistic regression. 
+
+
+# DISCUSSION 
+
+```{r}
+
+tablex = matrix(c(auc1,acc1,sen1,spe1,auc2,acc2,sen2,spe2,auc2,acc2,sen2,spe2),nrow = 3,ncol = 4)
+tablex = as.data.frame(tablex)
+colnames(tablex) = c('AUC','accuracy','sensitivity','specificity')
+rownames(tablex) = c('logit, balanced','logit, inbalanced','kNN' )
+knitr::kable(tablex,digit = 3)
+```
+
+
+
+
+* $\textbf{Difference in Performance:}$ The above table shows that KNN outperforms logistic regression in this specific context of prediction. We suspect that the following reasons contribute to the better performance of KNN algorithm. First, KNN better handles non-linearity compared to logistic regression which only allows linear relationships (after a logit transformation on the response). Besides, KNN is almost immune to outliers by design; whereas logistic regression is much more vulnerable to influential observations. Moreover, departures from the assumptions of the logistic regression model could also have adversely affected its predictive power. 
+
+* $\textbf{Choice of the Norm Function:}$ The L2-norm is one of the most common choices of the distance measure due to its geometric interpretation. While we have not experimented with other distance functions within the limited time horizon, since the result under Euclidean norm is reasonably good, we would like to acknowledge the fact that other distance measures could potentially produce even stronger prediction results for KNN. 
+
+* $\textbf{The “unknown”s:}$ In our analysis, we only fixed the missing values in marital status by dropping the observations. Although we are content with current results, we believe that there are a number of other ways to treat these values through which we could improve the performance of the logistic regression and/or KNN, time permitting. 
+
+
+
+
+# CONCLUSION
+
+This report compares and contrasts the predictive powers of logistic regression and the K-Nearest Neighbor algorithm in terms of their accuracy rates in out-of-sample prediction. After balancing the numbers of subscribers and non-subscribers in the dramatically unbalanced data set, we find that KNN outperforms logistic regression, possibly due to its non-parametric nature and robustness against influential cases. Additionally, a whole spectrum of alternative means of data processing and choices exist that could potentially enhance the predictive powers of the methods we employ. To fully exploit the value of this data set and boost the prediction accuracy, it is necessary to tune the parameters in the current analysis along with investing more time and effort in exploring other techniques.
+
+\pagebreak
+
+# APPENDIX
+
+
+## References
+
+Adhikari, N. 2017. Marketing Campaign for Term Deposit. https://rpubs.com/nrnjn_adhikari/391990 \
+Apampa, O. "Evaluation of classification and ensemble algorithms for bank customer marketing response prediction." Journal of International Technology and Information Management 25.4 (2016): 6. \
+How to choose the value of K in knn algorithm? https://discuss.analyticsvidhya.com/t/how-to-choose-the-value-of-k-in-knn-algorithm/2606 \
+Kassambara, A. 2018. Machine Learning Essentials: Practical Guide in R. \
+Moro,S., Cortez, P., and  Rita, P. A Data-Driven Approach to Predict the Success of Bank Telemarketing. Decision Support Systems, Elsevier, 62:22-31, June 2014
+
+
+## Graphs
+
+```{r}
+## Summary Statistics ##
+
+par(mfrow = c(4,3))
+
+barplot(table(bank$y,bank$job), main = '',legend = rownames(bank$job),beside = TRUE)
+barplot(table(bank$y,bank$marital), main = '',legend = rownames(bank$marital),beside = TRUE)
+barplot(table(bank$y,bank$education), main = '',legend = rownames(bank$education),beside = TRUE)
+barplot(table(bank$y,bank$default), main = '',legend = rownames(bank$default),beside = TRUE)
+barplot(table(bank$y,bank$housing), main = '',legend = rownames(bank$housing),beside = TRUE)
+barplot(table(bank$y,bank$loan), main = '',legend = rownames(bank$loan),beside = TRUE)
+barplot(table(bank$y,bank$contact), main = '',legend = rownames(bank$contact),beside = TRUE)
+barplot(table(bank$y,bank$month), main = '',legend = rownames(bank$month),beside = TRUE)
+barplot(table(bank$y,bank$day_of_week), main = '',legend = rownames(bank$day_of_week),beside = TRUE)
+barplot(table(bank$y,bank$poutcome), main = '',legend = rownames(bank$poutcome),beside = TRUE)
+
+par(mfrow = c(1,1))
+
+## Boxplots ##
+
+boxplot(age~y, data = bank, horizontal=TRUE,main = '', 
+        xlab = "Standardized Age", 
+        ylab = "Subscription to Term Deposit")
+```
+
+
+
+```{r fig.width= 5, fig.height= 5, fig.cap= 'Correlation Coefficient Matrix of Selected Variables' }
+# appendix
+# Heatmap
+x1 = cor(train[predicors])
+x1[upper.tri(x1,diag = TRUE)] <- NA
+x1 = round(x1,1)
+
+library(reshape2)
+melted_cormat <- melt(x1, na.rm = TRUE)
+
+library(ggplot2)
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 8, hjust = 1))+
+  coord_fixed() + 
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 1.5) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks = element_blank(),
+    #legend.justification = c(1, 0),
+    legend.position = c(0.6, 0.3),
+    legend.direction = "horizontal" ) +
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                               title.position = "top", title.hjust = 0.5))
+```
+
+```{r fig.width= 6, fig.height= 2, fig.cap='AUC curve for 3 models'}
+par(mfrow = c(1,3))
+auc(glm_full$y,glm_full$fitted.values,plot = TRUE,legacy.axes = TRUE, main = 'logit')
+auc(glm_full2$y,glm_full2$fitted.values,plot = TRUE,legacy.axes = TRUE, main = 'logit,inbalanced')
+auc(test[,"y"], as.numeric(as.character(knn_fit)), plot = TRUE,legacy.axes = TRUE,main = 'kNN')
+```
+
+
+## Tables
+```{r}
+table1(~. | y, data=bank_old, caption = 'Summary Statistics / Frequency Table of Variables')
+```
+
+\pagebreak
+## Outputs
+
+
+
+```{r}
+summary(glm_full)
+summary(glm_full2)
+```
+
+
+
+\pagebreak
+
+# Session Information
+
+```{r}
+print(sessionInfo(), local = FALSE)
+```
+
+
+
+
+
+
